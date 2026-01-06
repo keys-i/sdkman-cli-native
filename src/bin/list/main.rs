@@ -57,6 +57,7 @@ fn list_versions(
     let current = determine_current_version(&candidates_dir, candidate).unwrap_or_default();
 
     if !available {
+        offline_list(candidate, &versions_csv, &current)?;
         return Ok(());
     }
 
@@ -68,11 +69,45 @@ fn list_versions(
         api.trim_end_matches('/'),
         candidate,
         platform,
-        urlencoding::encode(&current),
-        urlencoding::encode(&versions_csv),
+        encode(&current),
+        encode(&versions_csv),
     );
 
     print_paged(&secure_get(&url)?)?;
+    Ok(())
+}
+
+/// Replacement for `__sdkman_offline_list`
+fn offline_list(candidate: &str, versions_csv: &str, current: &str) -> io::Result<()> {
+    println!("{}", "-".repeat(80));
+    println!(
+        "{}",
+        format!("Offline: only showing installed {candidate} versions").yellow()
+    );
+    println!("{}", "-".repeat(80));
+
+    let versions: Vec<&str> = versions_csv
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if versions.is_empty() {
+        println!("{}", "   None installed!".yellow());
+    } else {
+        for v in versions.iter().rev() {
+            if *v == current {
+                println!(" > {}", v);
+            } else {
+                println!(" * {}", v);
+            }
+        }
+    }
+
+    println!("{}", "-".repeat(80));
+    println!("* - installed");
+    println!("> - currently in use");
+    println!("{}", "-".repeat(80));
     Ok(())
 }
 
