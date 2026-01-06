@@ -19,6 +19,7 @@ symlink = "0.1.0"
 tempfile = "3.24.0"
 textwrap = "0.16.2"
 reqwest = { version = "0.13.1", features = ["blocking"] }
+urlencoding = "2.1.3"
 
 [dev-dependencies]
 insta = "1.45.1"

@@ -1,12 +1,17 @@
 use colored::Colorize;
 use reqwest::blocking::Client;
+use sdkman_cli_native::{constants::CANDIDATES_DIR, helpers::infer_sdkman_dir};
 use std::{
     env,
     error::Error,
+    ffi::OsStr,
+    fs,
     io::{self, Write},
+    path::Path,
     process::exit,
     time::Duration,
 };
+use urlencoding::encode;
 
 fn main() {
     if let Err(e) = run() {
@@ -16,7 +21,16 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    Ok(())
+    let sdkman_dir = infer_sdkman_dir();
+    let args: Vec<String> = env::args().collect();
+    let candidate = args.get(1).map(String::as_str);
+
+    let available = env::var("SDKMAN_AVAILABLE").ok().as_deref() != Some("false");
+
+    match candidate {
+        None => list_candidates(available),
+        Some(c) => list_versions(&sdkman_dir, available, c),
+    }
 }
 
 /// Replacement for `__sdkman_list_candidates`
@@ -30,6 +44,83 @@ fn list_candidates(available: bool) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/candidates/list", api.trim_end_matches('/'));
     print_paged(&secure_get(&url)?)?;
     Ok(())
+}
+
+/// Replacement for `__sdkman_list_versions`
+fn list_versions(
+    sdkman_dir: &Path,
+    available: bool,
+    candidate: &str,
+) -> Result<(), Box<dyn Error>> {
+    let candidates_dir = sdkman_dir.join(CANDIDATES_DIR);
+    let versions_csv = build_version_csv(&candidates_dir, candidate);
+    let current = determine_current_version(&candidates_dir, candidate).unwrap_or_default();
+
+    if !available {
+        return Ok(());
+    }
+
+    let api = env::var("SDKMAN_CANDIDATES_API")?;
+    let platform = env::var("SDKMAN_PLATFORM")?;
+
+    let url = format!(
+        "{}/candidates/{}/{}/versions/list?current={}&installed={}",
+        api.trim_end_matches('/'),
+        candidate,
+        platform,
+        urlencoding::encode(&current),
+        urlencoding::encode(&versions_csv),
+    );
+
+    print_paged(&secure_get(&url)?)?;
+    Ok(())
+}
+
+/// Replacement for `__sdkman_build_version_csv`
+/// - scans `${SDKMAN_CANDIDATES_DIR}/${candidate}`
+/// - includes dirs OR symlinks
+/// - excludes "current"
+/// - sorts ascending
+/// - joins with commas
+fn build_version_csv(candidate_dir: &Path, candidate: &str) -> String {
+    let base = candidate_dir.join(candidate);
+    if !base.is_dir() {
+        return String::new();
+    }
+
+    let mut versions: Vec<String> = Vec::new();
+    let rd = match fs::read_dir(&base) {
+        Ok(rd) => rd,
+        Err(_) => return String::new(),
+    };
+
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        if name == OsStr::new("current") {
+            continue;
+        }
+
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !(ft.is_dir() || ft.is_symlink()) {
+            continue;
+        }
+
+        if let Some(s) = name.to_str() {
+            versions.push(s.to_string());
+        }
+    }
+    versions.sort();
+    versions.join(",")
+}
+
+/// Replacement of `__sdkman_determine_current_version`
+fn determine_current_version(candidate_dir: &Path, candidate: &str) -> Option<String> {
+    let current_path = candidate_dir.join(candidate).join("current");
+    let target = fs::read_link(&current_path).ok()?;
+    target.file_name()?.to_str().map(|s| s.to_string())
 }
 
 fn print_paged(s: &str) -> io::Result<()> {
