@@ -38,10 +38,8 @@ fn main() {
 
     if current_link_path.exists() {
         remove_symlink_dir(&current_link_path).unwrap_or_else(|_| {
-            remove_dir_all(&current_link_path).expect(&format!(
-                "cannot remove current directory for {}.",
-                candidate
-            ))
+            remove_dir_all(&current_link_path)
+                .unwrap_or_else(|_| panic!("cannot remove current directory for {}.", candidate))
         })
     }
     println!(
