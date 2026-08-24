@@ -1,8 +1,16 @@
-name: Release Beta
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        type: choice
+        description: "Release channel"
+        required: true
+        options:
+          - "beta"
+          - "stable"
+        default: "beta"
       level:
         type: choice
         description: "Release level"
@@ -13,9 +21,20 @@ on:
           - "major"
         default: "patch"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   prerelease:
+    if: github.event.inputs.channel == 'beta'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     outputs:
       VERSION: ${{ steps.vars.outputs.VERSION }}
     steps:
@@ -50,7 +69,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
           echo "Setting VERSION to $version"
-          echo "VERSION=$version" >> $GITHUB_OUTPUT
+          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
   build:
     needs: [ prerelease ]
     name: 'Build ${{ matrix.job.target }}'
@@ -65,6 +84,7 @@ jobs:
           - {target: i686-unknown-linux-gnu, os: ubuntu-latest, linux: true, jreleaser_platform: linux-x86_32}
           - {target: aarch64-unknown-linux-gnu, os: ubuntu-latest, linux: true, jreleaser_platform: linux-aarch_64}
     runs-on: ${{ matrix.job.os }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -84,6 +104,7 @@ jobs:
           target: ${{ matrix.job.target }}
 
       - name: Install Zig
+        if: matrix.job.linux
         uses: mlugg/setup-zig@v2
         with:
           version: 0.13.0
@@ -129,6 +150,9 @@ jobs:
   release:
     needs: [ prerelease, build ]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -157,7 +181,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 1
-          name: jreleaser-release-${{ matrix.job.target }}
+          name: jreleaser-release
           path: |
             out/jreleaser/trace.log
             out/jreleaser/output.properties
@@ -168,3 +192,53 @@ jobs:
           MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
           RELEASE_VERSION: ${{ needs.prerelease.outputs.VERSION }}
         run: bin/release-binary.sh "$MONGO_URL" "$MONGO_USERNAME" "$MONGO_PASSWORD" "$RELEASE_VERSION" "beta"
+
+  promote:
+    if: github.event.inputs.channel == 'stable'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Get Latest Beta Version
+        id: get_version
+        run: |
+          latest_tag=$(git describe --tags --abbrev=0)
+          version=${latest_tag#v}
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Latest tag version: ${latest_tag}"
+
+      - name: Promote to Stable
+        env:
+          MONGO_URL: ${{ secrets.MONGO_URL }}
+          MONGO_USERNAME: ${{ secrets.MONGO_USERNAME }}
+          MONGO_PASSWORD: ${{ secrets.MONGO_PASSWORD }}
+          RELEASE_VERSION: ${{ env.VERSION }}
+        run: bin/release-binary.sh "$MONGO_URL" "$MONGO_USERNAME" "$MONGO_PASSWORD" "$RELEASE_VERSION" "stable"
+
+      - name: Announce Release
+        uses: jreleaser/release-action@v2
+        with:
+          version: latest
+          arguments: announce
+        env:
+          JRELEASER_PROJECT_VERSION: ${{ env.VERSION }}
+          JRELEASER_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JRELEASER_MASTODON_ACCESS_TOKEN: ${{ secrets.MASTODON_ACCESS_TOKEN }}
+          JRELEASER_BLUESKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
+          JRELEASER_BLUESKY_PASSWORD: ${{ secrets.BLUESKY_PASSWORD }}
+
+      - name: JReleaser output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          retention-days: 1
+          name: jreleaser-announce
+          path: |
+            out/jreleaser/trace.log
+            out/jreleaser/output.properties

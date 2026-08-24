@@ -5,6 +5,9 @@ on:
     # Dependabot defaults to 05:00 UTC; 4h gives it room to land the batch.
     - cron: "0 9 * * 3"
   workflow_dispatch: {}
+concurrency:
+  group: dependabot-digest
+  cancel-in-progress: true
 jobs:
   digest:
     permissions:
@@ -12,5 +15,7 @@ jobs:
       actions: read
     uses: sdkman/.github/.github/workflows/reusable-dependabot-digest.yml@main
     with:
-      pr_ci_workflow: "Pull Requests"
-    secrets: inherit
+      pr_ci_workflow: "Checks"
+    secrets:
+      OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
+      OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}

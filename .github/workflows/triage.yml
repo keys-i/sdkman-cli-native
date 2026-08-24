@@ -1,0 +1,46 @@
+name: Triage
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened]
+  workflow_run:
+    workflows: ["Checks", "Claude Code", "Pull Requests", "Release"]
+    types: [completed]
+
+jobs:
+  events:
+    if: github.event_name != 'workflow_run'
+    permissions: {}
+    uses: sdkman/.github/.github/workflows/reusable-triage-events.yml@main
+    secrets:
+      OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
+      OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}
+
+  fork-pr:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Pull Requests' &&
+      github.event.workflow_run.event == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    uses: sdkman/.github/.github/workflows/reusable-triage-fork-pr.yml@main
+    secrets:
+      OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
+      OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}
+
+  failure-alert:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    permissions: {}
+    uses: sdkman/.github/.github/workflows/reusable-workflow-failure-alert.yml@main
+    secrets:
+      OPENCLAW_HOOK_URL: ${{ secrets.OPENCLAW_HOOK_URL }}
+      OPENCLAW_HOOK_TOKEN: ${{ secrets.OPENCLAW_HOOK_TOKEN }}

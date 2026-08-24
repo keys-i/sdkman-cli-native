@@ -1,0 +1,61 @@
+name: Checks
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "false"
+      - name: Check formatting
+        id: formatting
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: Lint
+        id: linting
+        continue-on-error: true
+        run: cargo clippy --locked
+      - name: Test
+        id: testing
+        continue-on-error: true
+        run: cargo test --locked
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo '### Checks'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | :---: |'
+            echo "| Formatting | ${{ steps.formatting.outcome == 'success' && '✅' || '❌' }} |"
+            echo "| Linting | ${{ steps.linting.outcome == 'success' && '✅' || '❌' }} |"
+            echo "| Testing | ${{ steps.testing.outcome == 'success' && '✅' || '❌' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail unsuccessful checks
+        if: >-
+          always() &&
+          (steps.formatting.outcome != 'success' ||
+           steps.linting.outcome != 'success' ||
+           steps.testing.outcome != 'success')
+        run: exit 1
