@@ -1,114 +1,110 @@
-#[cfg(test)]
-use assert_cmd::Command;
-use predicates::str::contains;
-use serial_test::serial;
-use std::{env, fs};
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use assert_cmd::prelude::*;
 use support::{TestCandidate, VirtualEnv};
 
 mod support;
 
-#[test]
-#[serial]
-fn should_set_an_installed_version_as_default() -> Result<(), Box<dyn std::error::Error>> {
-    let env = VirtualEnv {
-        cli_version: "0.0.1".to_string(),
-        native_version: "0.0.1".to_string(),
+fn command(sdkman_dir: &Path) -> Command {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("default"));
+    command.env("SDKMAN_DIR", sdkman_dir);
+    command
+}
+
+fn environment() -> tempfile::TempDir {
+    support::virtual_env(VirtualEnv {
+        cli_version: "0.0.1".to_owned(),
         candidates: vec![TestCandidate {
             name: "scala",
             versions: vec!["0.0.1", "0.0.2"],
             current_version: "0.0.1",
         }],
-    };
-
-    let sdkman_dir = support::virtual_env(env);
-    let dir_string = sdkman_dir.path().to_str().unwrap();
-
-    env::set_var("SDKMAN_DIR", dir_string);
-    let expected_output = "setting scala 0.0.2 as the default version for all shells";
-    Command::new(assert_cmd::cargo::cargo_bin!("default"))
-        .arg("scala")
-        .arg("0.0.2")
-        .assert()
-        .success()
-        .stdout(contains(expected_output))
-        .code(0);
-
-    let file = sdkman_dir
-        .path()
-        .join("candidates")
-        .join("scala")
-        .join("current")
-        .join("bin")
-        .join("scala");
-    let content = fs::read_to_string(file).unwrap();
-    assert!(content.contains("Running scala 0.0.2"));
-
-    Ok(())
+    })
 }
 
 #[test]
-#[serial]
-fn should_reset_the_current_default_version_as_default() -> Result<(), Box<dyn std::error::Error>> {
-    let env = VirtualEnv {
-        cli_version: "0.0.1".to_string(),
-        native_version: "0.0.1".to_string(),
-        candidates: vec![TestCandidate {
-            name: "scala",
-            versions: vec!["0.0.1"],
-            current_version: "0.0.1",
-        }],
-    };
+fn sets_same_or_other_installed_version_as_default() {
+    for (version, expected) in [
+        ("0.0.1", "Running scala 0.0.1"),
+        ("0.0.2", "Running scala 0.0.2"),
+    ] {
+        let sdkman_dir = environment();
+        command(sdkman_dir.path())
+            .args(["scala", version])
+            .assert()
+            .success()
+            .stdout(format!(
+                "setting scala {version} as the default version for all shells.\n"
+            ))
+            .stderr("");
 
-    let sdkman_dir = support::virtual_env(env);
-    let dir_string = sdkman_dir.path().to_str().unwrap();
-
-    env::set_var("SDKMAN_DIR", dir_string);
-    let expected_output = "setting scala 0.0.1 as the default version for all shells";
-    Command::new(assert_cmd::cargo::cargo_bin!("default"))
-        .arg("scala")
-        .arg("0.0.1")
-        .assert()
-        .success()
-        .stdout(contains(expected_output))
-        .code(0);
-
-    let file = sdkman_dir
-        .path()
-        .join("candidates")
-        .join("scala")
-        .join("current")
-        .join("bin")
-        .join("scala");
-    let content = fs::read_to_string(file).unwrap();
-    assert!(content.contains("Running scala 0.0.1"));
-
-    Ok(())
+        let current = sdkman_dir.path().join("candidates/scala/current");
+        assert_eq!(
+            fs::canonicalize(&current).unwrap(),
+            fs::canonicalize(sdkman_dir.path().join("candidates/scala").join(version)).unwrap()
+        );
+        assert!(fs::read_to_string(current.join("bin/scala"))
+            .unwrap()
+            .contains(expected));
+    }
 }
 
 #[test]
-#[serial]
-fn should_not_set_an_uninstalled_version_as_default() -> Result<(), Box<dyn std::error::Error>> {
-    let env = VirtualEnv {
-        cli_version: "0.0.1".to_string(),
-        native_version: "0.0.1".to_string(),
-        candidates: vec![TestCandidate {
-            name: "scala",
-            versions: vec!["0.0.1"],
-            current_version: "0.0.1",
-        }],
-    };
+fn failed_default_leaves_the_old_current_in_place() {
+    let sdkman_dir = environment();
+    let current = sdkman_dir.path().join("candidates/scala/current");
+    let old = fs::canonicalize(&current).unwrap();
 
-    let sdkman_dir = support::virtual_env(env);
-    let dir_string = sdkman_dir.path().to_str().unwrap();
-
-    env::set_var("SDKMAN_DIR", dir_string);
-    let expected_output = "scala 0.0.2 is not installed on your system";
-    Command::new(assert_cmd::cargo::cargo_bin!("default"))
-        .arg("scala")
-        .arg("0.0.2")
+    command(sdkman_dir.path())
+        .args(["scala", "0.0.3"])
         .assert()
         .failure()
-        .stderr(contains(expected_output))
-        .code(1);
-    Ok(())
+        .code(1)
+        .stdout("")
+        .stderr("scala 0.0.3 is not installed on your system\n");
+
+    assert_eq!(fs::canonicalize(current).unwrap(), old);
+}
+
+#[test]
+fn replaces_a_dangling_current_link() {
+    let sdkman_dir = environment();
+    let current = sdkman_dir.path().join("candidates/scala/current");
+    fs::remove_dir_all(sdkman_dir.path().join("candidates/scala/0.0.1")).unwrap();
+
+    command(sdkman_dir.path())
+        .args(["scala", "0.0.2"])
+        .assert()
+        .success()
+        .stdout("setting scala 0.0.2 as the default version for all shells.\n");
+
+    assert_eq!(
+        fs::canonicalize(current).unwrap(),
+        fs::canonicalize(sdkman_dir.path().join("candidates/scala/0.0.2")).unwrap()
+    );
+}
+
+#[test]
+fn recovers_from_a_stale_backup() {
+    let sdkman_dir = environment();
+    let candidate = sdkman_dir.path().join("candidates/scala");
+    let current = candidate.join("current");
+    let backup = candidate.join("current-old");
+    fs::create_dir(&backup).unwrap();
+
+    command(sdkman_dir.path())
+        .args(["scala", "0.0.2"])
+        .assert()
+        .success()
+        .stdout("setting scala 0.0.2 as the default version for all shells.\n")
+        .stderr("");
+
+    assert_eq!(
+        fs::canonicalize(&current).unwrap(),
+        fs::canonicalize(candidate.join("0.0.2")).unwrap()
+    );
+    assert!(fs::symlink_metadata(&backup).is_err());
+    assert!(!candidate.join("current-new").exists());
 }

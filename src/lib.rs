@@ -2,6 +2,7 @@ pub mod constants {
     pub const CANDIDATES_DIR: &str = "candidates";
     pub const CANDIDATES_FILE: &str = "candidates";
     pub const CURRENT_DIR: &str = "current";
+    pub const CURRENT_VERSION_FILE: &str = ".sdkman-current-version";
     pub const DEFAULT_SDKMAN_HOME: &str = ".sdkman";
     pub const SDKMAN_DIR_ENV_VAR: &str = "SDKMAN_DIR";
     pub const TMP_DIR: &str = "tmp";
@@ -11,7 +12,7 @@ pub mod constants {
 pub mod helpers {
     use colored::Colorize;
     use directories::UserDirs;
-    use std::path::PathBuf;
+    use std::path::{Component, Path, PathBuf};
     use std::{env, fs, process};
 
     use crate::constants::{
@@ -19,10 +20,10 @@ pub mod helpers {
     };
 
     pub fn infer_sdkman_dir() -> PathBuf {
-        match env::var(SDKMAN_DIR_ENV_VAR) {
-            Ok(s) => PathBuf::from(s),
-            Err(_) => fallback_sdkman_dir(),
-        }
+        env::var_os(SDKMAN_DIR_ENV_VAR)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(fallback_sdkman_dir)
     }
 
     fn fallback_sdkman_dir() -> PathBuf {
@@ -31,52 +32,89 @@ pub mod helpers {
             .unwrap()
     }
 
-    pub fn check_file_exists(path: PathBuf) -> PathBuf {
-        if path.exists() && path.is_file() {
-            path
-        } else {
-            panic!("not a valid path: {}", path.to_str().unwrap())
-        }
+    pub fn read_file_content(path: &Path) -> Option<String> {
+        fs::read_to_string(path)
+            .ok()
+            .map(|content| content.trim().to_owned())
+            .filter(|content| !content.is_empty())
     }
 
-    pub fn read_file_content(path: PathBuf) -> Option<String> {
-        match fs::read_to_string(path) {
-            Ok(s) => Some(s),
-            Err(_) => None,
-        }
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
+    fn is_normal_path_segment(value: &str) -> bool {
+        let mut components = Path::new(value).components();
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
     }
 
-    pub fn known_candidates<'a>(sdkman_dir: PathBuf) -> Vec<&'static str> {
+    pub fn known_candidates(sdkman_dir: &Path) -> Vec<String> {
         let absolute_path = sdkman_dir.join(VAR_DIR).join(CANDIDATES_FILE);
-        let verified_path = check_file_exists(absolute_path);
-        let panic = format!(
-            "the candidates file is missing: {}",
-            verified_path.to_str().unwrap()
-        );
-        let content = read_file_content(verified_path).expect(&panic);
-        let line_str: &'static str = Box::leak(content.into_boxed_str());
-        let mut fields = Vec::new();
-        for field in line_str.split(',') {
-            fields.push(field.trim());
+        let content = match fs::read_to_string(&absolute_path) {
+            Ok(content) => content,
+            Err(_) => {
+                eprintln!(
+                    "cannot read SDKMAN candidates file {}",
+                    absolute_path.display()
+                );
+                process::exit(1);
+            }
+        };
+
+        let candidates: Vec<_> = content
+            .split(',')
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .map(str::to_owned)
+            .collect();
+
+        if candidates
+            .iter()
+            .any(|candidate| !is_normal_path_segment(candidate))
+        {
+            eprintln!(
+                "SDKMAN candidates file {} contains an invalid candidate name",
+                absolute_path.display()
+            );
+            process::exit(1);
         }
 
-        fields
+        candidates
     }
 
-    pub fn validate_candidate(all_candidates: Vec<&str>, candidate: &str) -> String {
-        if !all_candidates.contains(&candidate) {
+    pub fn validate_candidate(all_candidates: &[String], candidate: &str) {
+        if !is_normal_path_segment(candidate)
+            || !all_candidates.iter().any(|known| known == candidate)
+        {
             eprintln!("{} is not a valid candidate.", candidate.bold());
             process::exit(1);
-        } else {
-            candidate.to_string()
         }
     }
 
-    pub fn validate_version_path(base_dir: PathBuf, candidate: &str, version: &str) -> PathBuf {
-        let version_path = base_dir.join(CANDIDATES_DIR).join(candidate).join(version);
-        if version_path.exists() && version_path.is_dir() {
+    pub fn validate_version_path(base_dir: &Path, candidate: &str, version: &str) -> PathBuf {
+        if !is_normal_path_segment(candidate) || !is_normal_path_segment(version) {
+            eprintln!(
+                "{} {} is not installed on your system",
+                candidate.bold(),
+                version.bold()
+            );
+            process::exit(1);
+        }
+
+        let candidates_path = base_dir.join(CANDIDATES_DIR);
+        let candidate_path = candidates_path.join(candidate);
+        let version_path = candidate_path.join(version);
+        let contained = (|| {
+            let base_dir = fs::canonicalize(base_dir).ok()?;
+            let candidates_path = fs::canonicalize(candidates_path).ok()?;
+            let candidate_path = fs::canonicalize(candidate_path).ok()?;
+            let version_path = fs::canonicalize(&version_path).ok()?;
+
+            Some(
+                candidates_path == base_dir.join(CANDIDATES_DIR)
+                    && candidate_path == candidates_path.join(candidate)
+                    && version_path == candidate_path.join(version),
+            )
+        })()
+        .unwrap_or(false);
+
+        if contained && version_path.is_dir() {
             version_path
         } else {
             eprintln!(
@@ -92,49 +130,91 @@ pub mod helpers {
 #[cfg(test)]
 mod tests {
     use std::env;
-    use std::io::Write;
+    use std::ffi::OsString;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
 
     use serial_test::serial;
-    use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     use crate::constants::SDKMAN_DIR_ENV_VAR;
     use crate::helpers::infer_sdkman_dir;
     use crate::helpers::read_file_content;
 
+    struct EnvVarGuard(Option<OsString>);
+
+    impl EnvVarGuard {
+        fn capture(name: &str) -> Self {
+            Self(env::var_os(name))
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.0.take() {
+                env::set_var(SDKMAN_DIR_ENV_VAR, value);
+            } else {
+                env::remove_var(SDKMAN_DIR_ENV_VAR);
+            }
+        }
+    }
+
     #[test]
     #[serial]
     fn should_infer_sdkman_dir_from_env_var() {
+        let _guard = EnvVarGuard::capture(SDKMAN_DIR_ENV_VAR);
         let sdkman_dir = PathBuf::from("/home/someone/.sdkman");
-        env::set_var(SDKMAN_DIR_ENV_VAR, sdkman_dir.to_owned());
+        env::set_var(SDKMAN_DIR_ENV_VAR, &sdkman_dir);
         assert_eq!(sdkman_dir, infer_sdkman_dir());
     }
 
     #[test]
     #[serial]
-    fn should_infer_fallback_dir() {
-        env::remove_var(SDKMAN_DIR_ENV_VAR);
-        let actual_sdkman_dir = dirs::home_dir().unwrap().join(".sdkman");
-        assert_eq!(actual_sdkman_dir, infer_sdkman_dir());
+    fn should_infer_fallback_dir_for_missing_or_empty_env_var() {
+        let _guard = EnvVarGuard::capture(SDKMAN_DIR_ENV_VAR);
+        let actual_sdkman_dir = directories::UserDirs::new()
+            .unwrap()
+            .home_dir()
+            .join(".sdkman");
+        for value in [None, Some("")] {
+            match value {
+                Some(value) => env::set_var(SDKMAN_DIR_ENV_VAR, value),
+                None => env::remove_var(SDKMAN_DIR_ENV_VAR),
+            }
+            assert_eq!(actual_sdkman_dir, infer_sdkman_dir());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn should_preserve_non_utf8_sdkman_dir() {
+        let _guard = EnvVarGuard::capture(SDKMAN_DIR_ENV_VAR);
+        let value = OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0x80]);
+        let expected = PathBuf::from(value.clone());
+        env::set_var(SDKMAN_DIR_ENV_VAR, value);
+        assert_eq!(expected, infer_sdkman_dir());
     }
 
     #[test]
-    #[serial]
-    fn should_read_content_from_file() {
-        let expected_version = "5.0.0";
-        let mut file = NamedTempFile::new().unwrap();
-        file.write(expected_version.as_bytes()).unwrap();
-        let path = file.path().to_path_buf();
-        let maybe_version = read_file_content(path);
-        assert_eq!(maybe_version, Some(expected_version.to_string()));
-    }
-
-    #[test]
-    #[serial]
-    fn should_fail_reading_file_content_from_empty_file() {
-        let file = NamedTempFile::new().unwrap();
-        let path = file.path().to_path_buf();
-        let maybe_version = read_file_content(path);
-        assert_eq!(maybe_version, None);
+    fn should_read_trimmed_non_blank_content_only() {
+        let temp_dir = TempDir::new().unwrap();
+        for (name, content, expected) in [
+            ("trimmed", Some(" 5.0.0\n"), Some("5.0.0")),
+            ("blank", Some("  \n\t"), None),
+            ("missing", None, None),
+        ] {
+            let path = temp_dir.path().join(name);
+            if let Some(content) = content {
+                fs::write(&path, content).unwrap();
+            }
+            assert_eq!(
+                read_file_content(&path),
+                expected.map(str::to_owned),
+                "{name}"
+            );
+        }
     }
 }

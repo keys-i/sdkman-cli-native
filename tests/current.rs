@@ -1,193 +1,157 @@
-#[cfg(test)]
-use std::env;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use predicates::prelude::*;
-use serial_test::serial;
+use sdkman_cli_native::constants::CURRENT_VERSION_FILE;
 use support::{TestCandidate, VirtualEnv};
 
 mod support;
 
+fn command(sdkman_dir: &Path) -> Command {
+    let mut command = Command::new(assert_cmd::cargo::cargo_bin!("current"));
+    command.env("SDKMAN_DIR", sdkman_dir);
+    command
+}
+
+fn environment(candidates: Vec<TestCandidate>) -> tempfile::TempDir {
+    support::virtual_env(VirtualEnv {
+        cli_version: "5.0.0".to_owned(),
+        candidates,
+    })
+}
+
 #[test]
-#[serial]
-fn should_show_current_version_for_specific_candidate() -> Result<(), Box<dyn std::error::Error>> {
-    let name = "java";
-    let current_version = "11.0.15-tem";
-    let versions = vec!["11.0.15-tem", "17.0.3-tem"];
+fn shows_the_specific_current_version() {
+    let sdkman_dir = environment(vec![TestCandidate {
+        name: "java",
+        versions: vec!["11.0.15-tem", "17.0.3-tem"],
+        current_version: "11.0.15-tem",
+    }]);
 
-    let env = VirtualEnv {
-        cli_version: "5.0.0".to_string(),
-        native_version: "0.1.0".to_string(),
-        candidates: vec![TestCandidate {
-            name,
-            versions: versions.clone(),
-            current_version,
-        }],
-    };
-
-    let sdkman_dir = support::virtual_env(env);
-    env::set_var("SDKMAN_DIR", sdkman_dir.path().as_os_str());
-
-    let expected_output = format!("Current default {} version {}", name, current_version);
-    let contains_expected = predicate::str::contains(expected_output);
-
-    Command::new(assert_cmd::cargo::cargo_bin!("current"))
-        .arg(name)
+    command(sdkman_dir.path())
+        .arg("java")
         .assert()
         .success()
-        .stdout(contains_expected)
-        .code(0);
-
-    Ok(())
+        .stdout("Current default java version 11.0.15-tem\n")
+        .stderr("");
 }
 
 #[test]
-#[serial]
-fn should_show_current_versions_for_all_candidates() -> Result<(), Box<dyn std::error::Error>> {
-    // Define multiple candidates with their versions
-    let java_name = "java";
-    let java_current_version = "11.0.15-tem";
-    let java_versions = vec!["11.0.15-tem", "17.0.3-tem"];
+fn shows_all_current_versions() {
+    let sdkman_dir = environment(vec![
+        TestCandidate {
+            name: "java",
+            versions: vec!["11.0.15-tem"],
+            current_version: "11.0.15-tem",
+        },
+        TestCandidate {
+            name: "kotlin",
+            versions: vec!["1.7.22"],
+            current_version: "1.7.22",
+        },
+    ]);
 
-    let kotlin_name = "kotlin";
-    let kotlin_current_version = "1.7.22";
-    let kotlin_versions = vec!["1.6.21", "1.7.22"];
-
-    let env = VirtualEnv {
-        cli_version: "5.0.0".to_string(),
-        native_version: "0.1.0".to_string(),
-        candidates: vec![
-            TestCandidate {
-                name: java_name,
-                versions: java_versions.clone(),
-                current_version: java_current_version,
-            },
-            TestCandidate {
-                name: kotlin_name,
-                versions: kotlin_versions.clone(),
-                current_version: kotlin_current_version,
-            },
-        ],
-    };
-
-    let sdkman_dir = support::virtual_env(env);
-    env::set_var("SDKMAN_DIR", sdkman_dir.path().as_os_str());
-
-    // Expected output patterns for the simple format (candidate version)
-    let expected_java_output = format!("{} {}", java_name, java_current_version);
-    let expected_kotlin_output = format!("{} {}", kotlin_name, kotlin_current_version);
-
-    // Check for both expected outputs
-    let contains_java_output = predicate::str::contains(expected_java_output);
-    let contains_kotlin_output = predicate::str::contains(expected_kotlin_output);
-
-    Command::new(assert_cmd::cargo::cargo_bin!("current"))
+    command(sdkman_dir.path())
         .assert()
         .success()
-        .stdout(contains_java_output.and(contains_kotlin_output))
-        .code(0);
-
-    Ok(())
+        .stdout("Current default versions:\njava 11.0.15-tem\nkotlin 1.7.22\n");
 }
 
 #[test]
-#[serial]
-fn should_show_error_for_non_existent_candidate() -> Result<(), Box<dyn std::error::Error>> {
-    let invalid_name = "invalid";
+fn rejects_unknown_candidate() {
+    let sdkman_dir = environment(vec![TestCandidate {
+        name: "java",
+        versions: vec!["17"],
+        current_version: "17",
+    }]);
 
-    // Create a simple environment with an empty candidates file
-    let env = VirtualEnv {
-        cli_version: "5.0.0".to_string(),
-        native_version: "0.1.0".to_string(),
-        candidates: vec![],
-    };
-
-    let sdkman_dir = support::virtual_env(env);
-
-    // Write at least one valid candidate to avoid empty candidates list error
-    support::write_file(
-        sdkman_dir.path(),
-        Path::new("var"),
-        "candidates",
-        "java".to_string(),
-    );
-
-    env::set_var("SDKMAN_DIR", sdkman_dir.path().as_os_str());
-
-    let contains_error = predicate::str::contains(invalid_name);
-
-    Command::new(assert_cmd::cargo::cargo_bin!("current"))
-        .arg(invalid_name)
+    command(sdkman_dir.path())
+        .arg("invalid")
         .assert()
         .failure()
-        .stderr(contains_error)
-        .code(1);
-
-    Ok(())
+        .code(1)
+        .stdout("")
+        .stderr("invalid is not a valid candidate.\n");
 }
 
 #[test]
-#[serial]
-fn should_show_error_for_candidate_with_no_current_version(
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Create a candidate entry in candidates file, but no directory structure
-    let sdkman_dir = support::prepare_sdkman_dir();
+fn reports_no_current_version_for_missing_or_invalid_current() {
+    for state in ["missing", "dangling", "nested", "outside"] {
+        let sdkman_dir = environment(vec![TestCandidate {
+            name: "kotlin",
+            versions: vec!["1.7.22"],
+            current_version: "1.7.22",
+        }]);
+        let current = sdkman_dir.path().join("candidates/kotlin/current");
+        symlink::remove_symlink_dir(&current).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        match state {
+            "missing" => {}
+            "dangling" => symlink::symlink_dir("missing", &current).unwrap(),
+            "nested" => {
+                let nested = sdkman_dir.path().join("candidates/kotlin/nested/1.7.22");
+                fs::create_dir_all(&nested).unwrap();
+                symlink::symlink_dir("nested/1.7.22", &current).unwrap();
+            }
+            "outside" => {
+                let target = outside.path().join("1.7.22");
+                fs::create_dir(&target).unwrap();
+                symlink::symlink_dir(target, &current).unwrap();
+            }
+            _ => unreachable!(),
+        }
 
-    // Write candidates file with a candidate
-    let candidate_name = "kotlin";
-    support::write_file(
-        sdkman_dir.path(),
-        Path::new("var"),
-        "candidates",
-        candidate_name.to_string(),
-    );
-
-    // Create candidate directory but no current symlink
-    let candidate_dir = Path::new("candidates").join(candidate_name);
-    std::fs::create_dir_all(sdkman_dir.path().join(&candidate_dir))
-        .expect("Failed to create candidate directory");
-
-    env::set_var("SDKMAN_DIR", sdkman_dir.path().as_os_str());
-
-    let contains_error = predicate::str::contains("No current version of");
-
-    Command::new(assert_cmd::cargo::cargo_bin!("current"))
-        .arg(candidate_name)
-        .assert()
-        .failure()
-        .stderr(contains_error)
-        .code(1);
-
-    Ok(())
+        command(sdkman_dir.path())
+            .arg("kotlin")
+            .assert()
+            .failure()
+            .code(1)
+            .stdout("")
+            .stderr("No current version of kotlin configured.\n");
+    }
 }
 
 #[test]
-#[serial]
-fn should_show_message_when_no_candidates_in_use() -> Result<(), Box<dyn std::error::Error>> {
-    // Create empty candidates file, but ensure it has at least one character (e.g., "kotlin")
-    // to avoid causing a panic in the known_candidates function
-    let sdkman_dir = support::prepare_sdkman_dir();
-    support::write_file(
-        sdkman_dir.path(),
-        Path::new("var"),
-        "candidates",
-        "kotlin".to_string(),
-    );
+fn reports_no_candidates_in_use_for_empty_or_inactive_inventory() {
+    for candidates in ["", "java,kotlin"] {
+        let sdkman_dir = support::prepare_sdkman_dir();
+        support::write_file(
+            sdkman_dir.path(),
+            Path::new("var"),
+            "candidates",
+            candidates.to_owned(),
+        );
+        for candidate in candidates
+            .split(',')
+            .filter(|candidate| !candidate.is_empty())
+        {
+            fs::create_dir_all(sdkman_dir.path().join("candidates").join(candidate)).unwrap();
+        }
 
-    // Create candidates dir structure but without current symlinks
-    std::fs::create_dir_all(sdkman_dir.path().join("candidates/kotlin"))
-        .expect("Failed to create candidate directory");
+        command(sdkman_dir.path())
+            .assert()
+            .success()
+            .stdout("")
+            .stderr("No candidates are in use.\n");
+    }
+}
 
-    env::set_var("SDKMAN_DIR", sdkman_dir.path().as_os_str());
+#[test]
+fn reads_the_copied_current_marker() {
+    let sdkman_dir = environment(vec![TestCandidate {
+        name: "scala",
+        versions: vec!["3.3.0"],
+        current_version: "3.3.0",
+    }]);
+    let current = sdkman_dir.path().join("candidates/scala/current");
+    symlink::remove_symlink_dir(&current).unwrap();
+    fs::create_dir(&current).unwrap();
+    fs::write(current.join(CURRENT_VERSION_FILE), "3.3.0\n").unwrap();
 
-    let contains_message = predicate::str::contains("No candidates are in use");
-
-    Command::new(assert_cmd::cargo::cargo_bin!("current"))
+    command(sdkman_dir.path())
+        .arg("scala")
         .assert()
-        .stderr(contains_message)
-        .code(0);
-
-    Ok(())
+        .success()
+        .stdout("Current default scala version 3.3.0\n");
 }

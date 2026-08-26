@@ -1,10 +1,8 @@
-use std::process;
-
 use clap::Parser;
-use colored::Colorize;
 
-use sdkman_cli_native::constants::CANDIDATES_DIR;
-use sdkman_cli_native::helpers::{infer_sdkman_dir, known_candidates, validate_candidate};
+use sdkman_cli_native::helpers::{
+    infer_sdkman_dir, known_candidates, validate_candidate, validate_version_path,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,26 +23,8 @@ fn main() {
     let version = args.version;
     let sdkman_dir = infer_sdkman_dir();
 
-    let candidate = validate_candidate(known_candidates(sdkman_dir.to_owned()), &candidate);
+    validate_candidate(&known_candidates(&sdkman_dir), &candidate);
 
-    let candidate_path = sdkman_dir
-        .join(CANDIDATES_DIR)
-        .join(&candidate)
-        .join(&version);
-    if candidate_path.exists() && candidate_path.is_dir() {
-        println!(
-            "{}/{}/{}/{}",
-            sdkman_dir.to_str().unwrap(),
-            CANDIDATES_DIR,
-            &candidate,
-            &version
-        );
-    } else {
-        eprintln!(
-            "{} {} is not installed on your system.",
-            candidate.bold(),
-            version.bold()
-        );
-        process::exit(1);
-    }
+    let candidate_path = validate_version_path(&sdkman_dir, &candidate, &version);
+    print!("{}", candidate_path.display());
 }

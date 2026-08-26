@@ -1,5 +1,4 @@
-use std::fs::{create_dir_all, File};
-use std::io::Write;
+use std::fs::{create_dir_all, write};
 use std::path::{Path, PathBuf};
 use symlink::symlink_dir;
 
@@ -14,7 +13,6 @@ pub struct TestCandidate {
 #[derive(Default)]
 pub struct VirtualEnv {
     pub cli_version: String,
-    pub native_version: String,
     pub candidates: Vec<TestCandidate>,
 }
 
@@ -28,14 +26,6 @@ pub fn virtual_env(virtual_env: VirtualEnv) -> TempDir {
         var_path,
         "version",
         virtual_env.cli_version,
-    );
-
-    // native version file
-    write_file(
-        sdkman_dir.path(),
-        var_path,
-        "version_native",
-        virtual_env.native_version,
     );
 
     // Write candidates to the candidates file
@@ -72,18 +62,14 @@ echo Running {} {}
             );
         }
 
-        let version_location = PathBuf::from(format!(
-            "candidates/{}/{}",
-            candidate.name, candidate.current_version
-        ));
+        let version_location = PathBuf::from(candidate.current_version);
         let current_link_location = PathBuf::from(format!("candidates/{}/current", candidate.name));
-        let absolute_version = sdkman_dir.path().join(version_location.as_path());
         let absolute_current_link = sdkman_dir.path().join(current_link_location.as_path());
-        symlink_dir(absolute_version, absolute_current_link)
+        symlink_dir(version_location, absolute_current_link)
             .expect("cannot create current symlink");
     }
 
-    return sdkman_dir;
+    sdkman_dir
 }
 
 pub fn prepare_sdkman_dir() -> TempDir {
@@ -100,11 +86,10 @@ pub fn write_file(
     content: String,
 ) -> PathBuf {
     let absolute_path = temp_dir.join(relative_path);
-    create_dir_all(absolute_path.to_owned()).expect("could not create nested dirs");
+    create_dir_all(&absolute_path).expect("could not create nested dirs");
 
     let file_path = absolute_path.join(file_name);
-    let mut file = File::create(&file_path).expect("could not create file");
-    write!(file, "{}", content.to_string()).expect("could not write to file");
+    write(&file_path, content).expect("could not write to file");
 
     file_path
 }

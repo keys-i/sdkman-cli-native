@@ -1,5 +1,5 @@
 ---
-source: src/bin/help/main.rs
+source: src/bin/help.rs
 expression: render(config_help())
 ---
 

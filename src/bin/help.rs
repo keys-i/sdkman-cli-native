@@ -22,7 +22,7 @@ fn main() {
         .subcommand(Command::new("selfupdate"))
         .subcommand(Command::new("uninstall").alias("rm"))
         .subcommand(Command::new("update"))
-        .subcommand(Command::new("upgrade"))
+        .subcommand(Command::new("upgrade").alias("ug"))
         .subcommand(Command::new("use").alias("u"))
         .subcommand(Command::new("version").alias("v"))
         .get_matches();
@@ -45,7 +45,7 @@ fn main() {
         _ => main_help(),
     };
 
-    println!("{}", &render(help));
+    println!("{}", render(help));
 }
 
 struct Subcommand {
@@ -117,10 +117,10 @@ fn render(help: Help) -> String {
                         &fill(&sub.description, TEXT_WIDTH - desc_depth),
                         &desc_indent,
                     )[command.len()..];
-                    format!("{}{}\n", command.to_string(), description)
+                    format!("{}{}\n", command, description)
                 })
                 .collect();
-            return format!("{}\n{}\n", "SUBCOMMANDS & QUALIFIERS".bold(), lines);
+            format!("{}\n{}\n", "SUBCOMMANDS & QUALIFIERS".bold(), lines)
         })
         .collect();
 
@@ -134,19 +134,19 @@ fn render(help: Help) -> String {
                 indent(&config.snippet, indentation)
             )
         })
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
 
     let mnemonic = help
         .mnemonic
         .map(|mnemonic| {
             let text = format!(
                 "{} - may be used in place of the {} subcommand.",
-                &mnemonic.shorthand.bold(),
-                &mnemonic.command.bold()
+                mnemonic.shorthand.bold(),
+                mnemonic.command.bold()
             );
             format!("{}\n{}\n\n", "MNEMONIC".bold(), indent(&text, indentation))
         })
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
 
     let exit_code = help
         .exit_code
@@ -157,7 +157,7 @@ fn render(help: Help) -> String {
                 indent(&fill(&m, TEXT_WIDTH), indentation)
             )
         })
-        .unwrap_or_else(|| String::new());
+        .unwrap_or_default();
 
     let examples = format!(
         "{}\n{}\n\n",
@@ -343,7 +343,7 @@ fn flush_help() -> Help {
             },
             Subcommand {
                 command: "metadata".to_string(),
-                description: format!("removes any header metadata"),
+                description: "removes any header metadata".to_string(),
             },
             Subcommand {
                 command: "version".to_string(),
@@ -511,18 +511,17 @@ mod tests {
 
     /// # Working with Snapshots
     ///
-    /// Snapshots are stored in src/bin/help/snapshots/ and preserve ANSI formatting.
+    /// Snapshots are stored in src/bin/snapshots/ and preserve ANSI formatting.
     ///
     /// ```bash
     /// # Review changes
     /// cargo insta review
     ///
     /// # View formatted snapshots
-    /// bat src/bin/help/snapshots/
+    /// bat src/bin/snapshots/
     /// ```
     ///
     /// See https://insta.rs/ for more details.
-
     fn setup() {
         colored::control::set_override(true);
         colored::control::SHOULD_COLORIZE.set_override(true);
@@ -610,5 +609,11 @@ mod tests {
     fn should_render_use_help_with_formatting() {
         setup();
         insta::assert_snapshot!(render(use_help()));
+    }
+
+    #[test]
+    fn should_render_version_help_with_formatting() {
+        setup();
+        insta::assert_snapshot!(render(version_help()));
     }
 }
